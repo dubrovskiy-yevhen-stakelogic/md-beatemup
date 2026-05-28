@@ -14,16 +14,13 @@
 #define PLAYER_HIT_STUN_FRAMES 24
 #define PLAYER_KNOCKBACK_SPEED 2
 
-#define PLAYER_ATTACK_DURATION_FRAMES 22
-#define PLAYER_ATTACK_ACTIVE_START_FRAME 7
-#define PLAYER_ATTACK_ACTIVE_END_FRAME 14
+#define PLAYER_MAX_COMBO_STEP 3
+#define PLAYER_ATTACK_BUFFER_START_FRAME 10
 
 #define PLAYER_BODY_W 16
 #define PLAYER_BODY_H 16
 
-#define PLAYER_ATTACK_HITBOX_W 24
 #define PLAYER_ATTACK_HITBOX_H 14
-#define PLAYER_ATTACK_HITBOX_OFFSET_X 18
 #define PLAYER_ATTACK_HITBOX_OFFSET_Y 0
 
 #define MAX_ENEMIES 3
@@ -114,7 +111,8 @@ typedef struct
     u16 animFrame;
 
     u16 attackTimer;
-    bool hasHitEnemyThisAttack;
+    u16 comboStep;
+    bool queuedNextAttack;
 } Player;
 
 typedef struct
@@ -139,6 +137,9 @@ typedef struct
     EnemyState state;
     FacingDirection facing;
 
+    FacingDirection knockbackDirection;
+    s16 knockbackSpeed;
+
     u16 hitStunTimer;
     u16 attackTimer;
     u16 attackCooldownTimer;
@@ -160,6 +161,8 @@ static GameState gameState;
 static Player player;
 static Enemy enemies[MAX_ENEMIES];
 
+static bool playerHitEnemyThisAttack[MAX_ENEMIES];
+
 static DebugHitbox playerAttackHitbox;
 static DebugHitbox prevPlayerAttackHitbox;
 
@@ -170,6 +173,7 @@ static u16 previousJoy;
 static u16 playerHitCounter;
 static u16 enemyHitCounter;
 static u16 enemiesDefeated;
+static u16 hitPauseTimer;
 
 static const char* getPlayerStateText(PlayerState state)
 {
@@ -249,6 +253,133 @@ static bool rectsOverlap(Rect a, Rect b)
         && (a.y + a.h) > b.y;
 }
 
+static u16 getPlayerAttackDuration()
+{
+    switch (player.comboStep)
+    {
+        case 1:
+            return 20;
+        case 2:
+            return 22;
+        case 3:
+            return 30;
+        default:
+            return 20;
+    }
+}
+
+static u16 getPlayerAttackActiveStart()
+{
+    switch (player.comboStep)
+    {
+        case 1:
+            return 6;
+        case 2:
+            return 7;
+        case 3:
+            return 10;
+        default:
+            return 6;
+    }
+}
+
+static u16 getPlayerAttackActiveEnd()
+{
+    switch (player.comboStep)
+    {
+        case 1:
+            return 11;
+        case 2:
+            return 14;
+        case 3:
+            return 20;
+        default:
+            return 11;
+    }
+}
+
+static s16 getPlayerAttackHitboxWidth()
+{
+    switch (player.comboStep)
+    {
+        case 1:
+            return 24;
+        case 2:
+            return 28;
+        case 3:
+            return 36;
+        default:
+            return 24;
+    }
+}
+
+static s16 getPlayerAttackHitboxOffsetX()
+{
+    switch (player.comboStep)
+    {
+        case 1:
+            return 18;
+        case 2:
+            return 20;
+        case 3:
+            return 24;
+        default:
+            return 18;
+    }
+}
+
+static s16 getPlayerAttackDamage()
+{
+    switch (player.comboStep)
+    {
+        case 3:
+            return 2;
+        default:
+            return 1;
+    }
+}
+
+static s16 getPlayerAttackKnockbackSpeed()
+{
+    switch (player.comboStep)
+    {
+        case 1:
+            return 2;
+        case 2:
+            return 3;
+        case 3:
+            return 5;
+        default:
+            return 2;
+    }
+}
+
+static u16 getPlayerAttackHitPause()
+{
+    switch (player.comboStep)
+    {
+        case 3:
+            return 6;
+        default:
+            return 3;
+    }
+}
+
+static const char* getPlayerAttackHitboxText()
+{
+    switch (player.comboStep)
+    {
+        case 1:
+            return "1#";
+        case 2:
+            return "2#";
+        case 3:
+            return "3#";
+        default:
+            return "##";
+    }
+}
+
 static bool isPlayerAttacking()
 {
     return player.state == PLAYER_STATE_ATTACK;
@@ -257,8 +388,8 @@ static bool isPlayerAttacking()
 static bool isPlayerAttackActive()
 {
     return isPlayerAttacking()
-        && player.attackTimer >= PLAYER_ATTACK_ACTIVE_START_FRAME
-        && player.attackTimer <= PLAYER_ATTACK_ACTIVE_END_FRAME;
+        && player.attackTimer >= getPlayerAttackActiveStart()
+        && player.attackTimer <= getPlayerAttackActiveEnd();
 }
 
 static bool isEnemyAttacking(Enemy* enemy)
@@ -300,18 +431,20 @@ static Rect getEnemyHurtbox(Enemy* enemy)
 static Rect getPlayerAttackRect()
 {
     Rect rect;
+    s16 attackWidth = getPlayerAttackHitboxWidth();
+    s16 attackOffsetX = getPlayerAttackHitboxOffsetX();
 
     rect.y = player.y + PLAYER_ATTACK_HITBOX_OFFSET_Y;
-    rect.w = PLAYER_ATTACK_HITBOX_W;
+    rect.w = attackWidth;
     rect.h = PLAYER_ATTACK_HITBOX_H;
 
     if (player.facing == FACING_RIGHT)
     {
-        rect.x = player.x + PLAYER_ATTACK_HITBOX_OFFSET_X;
+        rect.x = player.x + attackOffsetX;
     }
     else
     {
-        rect.x = player.x - PLAYER_ATTACK_HITBOX_OFFSET_X - PLAYER_ATTACK_HITBOX_W + PLAYER_BODY_W;
+        rect.x = player.x - attackOffsetX - attackWidth + PLAYER_BODY_W;
     }
 
     return rect;
@@ -343,13 +476,13 @@ static void drawArena()
     VDP_clearPlane(BG_B, TRUE);
 
     VDP_drawText("========================================", 0, 0);
-    VDP_drawText("=        MD BEATEMUP - BUILD 008       =", 0, 1);
-    VDP_drawText("=       STAGE 5: ENEMY WAVE            =", 0, 2);
+    VDP_drawText("=        MD BEATEMUP - BUILD 009       =", 0, 1);
+    VDP_drawText("=       STAGE 6: 3 HIT COMBO           =", 0, 2);
     VDP_drawText("========================================", 0, 3);
 
     VDP_drawText("D-PAD: MOVE", 2, 5);
-    VDP_drawText("B: PUNCH", 17, 5);
-    VDP_drawText("START: RESTART AFTER WIN/LOSE", 2, 6);
+    VDP_drawText("B: PUNCH / TAP FOR 1-2-3 COMBO", 2, 6);
+    VDP_drawText("START: RESTART AFTER WIN/LOSE", 2, 7);
 
     VDP_drawText("+--------------------------------------+", 0, 10);
     VDP_drawText("|                                      |", 0, 11);
@@ -364,7 +497,17 @@ static void drawArena()
     VDP_drawText("|                                      |", 0, 20);
     VDP_drawText("+--------------------------------------+", 0, 21);
 
-    VDP_drawText("DEFEAT 3 ENEMIES TO CLEAR THE WAVE", 2, 23);
+    VDP_drawText("1#/2#/3# = COMBO HITBOX, 3RD IS HEAVY", 1, 23);
+}
+
+static void resetPlayerHitFlags()
+{
+    u16 i;
+
+    for (i = 0; i < MAX_ENEMIES; i++)
+    {
+        playerHitEnemyThisAttack[i] = FALSE;
+    }
 }
 
 static void initPlayer()
@@ -394,7 +537,10 @@ static void initPlayer()
     player.animFrame = 0;
 
     player.attackTimer = 0;
-    player.hasHitEnemyThisAttack = FALSE;
+    player.comboStep = 0;
+    player.queuedNextAttack = FALSE;
+
+    resetPlayerHitFlags();
 }
 
 static void initEnemy(u16 index, s16 x, s16 y)
@@ -420,6 +566,8 @@ static void initEnemy(u16 index, s16 x, s16 y)
 
     enemy->state = ENEMY_STATE_IDLE;
     enemy->facing = FACING_LEFT;
+    enemy->knockbackDirection = FACING_RIGHT;
+    enemy->knockbackSpeed = ENEMY_KNOCKBACK_SPEED;
 
     enemy->hitStunTimer = 0;
     enemy->attackTimer = 0;
@@ -467,6 +615,7 @@ static void resetGame()
     playerHitCounter = 0;
     enemyHitCounter = 0;
     enemiesDefeated = 0;
+    hitPauseTimer = 0;
 
     gameState = GAME_STATE_PLAYING;
 
@@ -522,15 +671,18 @@ static void clampEnemyToArena(Enemy* enemy)
     }
 }
 
-static void startPlayerAttack()
+static void startPlayerAttack(u16 comboStep)
 {
     player.state = PLAYER_STATE_ATTACK;
     player.velocityX = 0;
     player.velocityY = 0;
     player.attackTimer = 0;
+    player.comboStep = comboStep;
+    player.queuedNextAttack = FALSE;
     player.animTimer = 0;
     player.animFrame = 0;
-    player.hasHitEnemyThisAttack = FALSE;
+
+    resetPlayerHitFlags();
 }
 
 static void startEnemyAttack(Enemy* enemy)
@@ -553,15 +705,29 @@ static void updatePlayerInput()
     player.velocityX = 0;
     player.velocityY = 0;
 
-    if (player.state == PLAYER_STATE_DEAD || player.state == PLAYER_STATE_HIT || isPlayerAttacking())
+    if (player.state == PLAYER_STATE_DEAD || player.state == PLAYER_STATE_HIT)
     {
+        previousJoy = joy;
+        return;
+    }
+
+    if (isPlayerAttacking())
+    {
+        if (isBPressedNow
+            && !wasBPressedBefore
+            && player.attackTimer >= PLAYER_ATTACK_BUFFER_START_FRAME
+            && player.comboStep < PLAYER_MAX_COMBO_STEP)
+        {
+            player.queuedNextAttack = TRUE;
+        }
+
         previousJoy = joy;
         return;
     }
 
     if (isBPressedNow && !wasBPressedBefore)
     {
-        startPlayerAttack();
+        startPlayerAttack(1);
         previousJoy = joy;
         return;
     }
@@ -589,6 +755,7 @@ static void updatePlayerInput()
     if ((player.velocityX != 0) || (player.velocityY != 0))
     {
         player.state = PLAYER_STATE_WALK;
+        player.comboStep = 0;
     }
     else
     {
@@ -596,6 +763,23 @@ static void updatePlayerInput()
     }
 
     previousJoy = joy;
+}
+
+static void finishPlayerAttack()
+{
+    if (player.queuedNextAttack && player.comboStep < PLAYER_MAX_COMBO_STEP)
+    {
+        startPlayerAttack(player.comboStep + 1);
+        return;
+    }
+
+    player.state = PLAYER_STATE_IDLE;
+    player.attackTimer = 0;
+    player.comboStep = 0;
+    player.queuedNextAttack = FALSE;
+    player.animTimer = 0;
+    player.animFrame = 0;
+    resetPlayerHitFlags();
 }
 
 static void updatePlayerAnimation()
@@ -621,6 +805,8 @@ static void updatePlayerAnimation()
             player.state = PLAYER_STATE_IDLE;
             player.velocityX = 0;
             player.velocityY = 0;
+            player.comboStep = 0;
+            player.queuedNextAttack = FALSE;
         }
 
         return;
@@ -630,26 +816,40 @@ static void updatePlayerAnimation()
     {
         player.attackTimer++;
 
-        if (player.attackTimer < 6)
+        if (player.comboStep == 3)
         {
-            player.animFrame = 0;
-        }
-        else if (player.attackTimer < 15)
-        {
-            player.animFrame = 1;
+            if (player.attackTimer < 10)
+            {
+                player.animFrame = 0;
+            }
+            else if (player.attackTimer < 21)
+            {
+                player.animFrame = 1;
+            }
+            else
+            {
+                player.animFrame = 2;
+            }
         }
         else
         {
-            player.animFrame = 2;
+            if (player.attackTimer < 6)
+            {
+                player.animFrame = 0;
+            }
+            else if (player.attackTimer < 15)
+            {
+                player.animFrame = 1;
+            }
+            else
+            {
+                player.animFrame = 2;
+            }
         }
 
-        if (player.attackTimer >= PLAYER_ATTACK_DURATION_FRAMES)
+        if (player.attackTimer >= getPlayerAttackDuration())
         {
-            player.state = PLAYER_STATE_IDLE;
-            player.attackTimer = 0;
-            player.animTimer = 0;
-            player.animFrame = 0;
-            player.hasHitEnemyThisAttack = FALSE;
+            finishPlayerAttack();
         }
 
         return;
@@ -751,14 +951,16 @@ static void updateEnemyAttackHitbox(u16 index)
 static void damageEnemy(u16 index)
 {
     Enemy* enemy = &enemies[index];
+    s16 damage = getPlayerAttackDamage();
 
     if (enemy->state == ENEMY_STATE_DEAD)
     {
         return;
     }
 
-    enemy->hp--;
+    enemy->hp -= damage;
     enemyHitCounter++;
+    hitPauseTimer = getPlayerAttackHitPause();
 
     if (enemy->hp <= 0)
     {
@@ -780,7 +982,9 @@ static void damageEnemy(u16 index)
     enemy->state = ENEMY_STATE_HIT;
     enemy->velocityX = 0;
     enemy->velocityY = 0;
-    enemy->hitStunTimer = ENEMY_HIT_STUN_FRAMES;
+    enemy->knockbackDirection = player.facing;
+    enemy->knockbackSpeed = getPlayerAttackKnockbackSpeed();
+    enemy->hitStunTimer = ENEMY_HIT_STUN_FRAMES + (player.comboStep == 3 ? 8 : 0);
     enemy->attackTimer = 0;
     enemy->attackCooldownTimer = ENEMY_ATTACK_COOLDOWN_FRAMES;
     enemy->hasHitPlayerThisAttack = FALSE;
@@ -797,6 +1001,7 @@ static void damagePlayer(Enemy* enemy)
 
     player.hp--;
     playerHitCounter++;
+    hitPauseTimer = 4;
 
     if (player.hp <= 0)
     {
@@ -814,9 +1019,11 @@ static void damagePlayer(Enemy* enemy)
     player.velocityY = 0;
     player.hitStunTimer = PLAYER_HIT_STUN_FRAMES;
     player.attackTimer = 0;
-    player.hasHitEnemyThisAttack = FALSE;
+    player.comboStep = 0;
+    player.queuedNextAttack = FALSE;
     player.animTimer = 0;
     player.animFrame = 0;
+    resetPlayerHitFlags();
 
     if (enemy->facing == FACING_RIGHT)
     {
@@ -841,11 +1048,6 @@ static void checkPlayerAttackVsEnemies()
         return;
     }
 
-    if (player.hasHitEnemyThisAttack)
-    {
-        return;
-    }
-
     attackRect = getPlayerAttackRect();
 
     for (i = 0; i < MAX_ENEMIES; i++)
@@ -855,13 +1057,17 @@ static void checkPlayerAttackVsEnemies()
             continue;
         }
 
+        if (playerHitEnemyThisAttack[i])
+        {
+            continue;
+        }
+
         enemyHurtbox = getEnemyHurtbox(&enemies[i]);
 
         if (rectsOverlap(attackRect, enemyHurtbox))
         {
-            player.hasHitEnemyThisAttack = TRUE;
+            playerHitEnemyThisAttack[i] = TRUE;
             damageEnemy(i);
-            return;
         }
     }
 }
@@ -1020,13 +1226,13 @@ static void updateEnemyAnimationAndState(Enemy* enemy)
 
     if (enemy->state == ENEMY_STATE_HIT)
     {
-        if (player.facing == FACING_RIGHT)
+        if (enemy->knockbackDirection == FACING_RIGHT)
         {
-            enemy->x += ENEMY_KNOCKBACK_SPEED;
+            enemy->x += enemy->knockbackSpeed;
         }
         else
         {
-            enemy->x -= ENEMY_KNOCKBACK_SPEED;
+            enemy->x -= enemy->knockbackSpeed;
         }
 
         if (enemy->hitStunTimer > 0)
@@ -1037,6 +1243,7 @@ static void updateEnemyAnimationAndState(Enemy* enemy)
         if (enemy->hitStunTimer == 0)
         {
             enemy->state = ENEMY_STATE_IDLE;
+            enemy->knockbackSpeed = ENEMY_KNOCKBACK_SPEED;
         }
 
         return;
@@ -1165,12 +1372,17 @@ static const char* getPlayerDisplayText()
     {
         if (player.state == PLAYER_STATE_ATTACK)
         {
-            if (player.animFrame == 1)
+            if (player.comboStep == 3)
             {
-                return "P)";
+                return player.animFrame == 1 ? "P}" : "P>";
             }
 
-            return "P>";
+            if (player.comboStep == 2)
+            {
+                return player.animFrame == 1 ? "P]" : "P>";
+            }
+
+            return player.animFrame == 1 ? "P)" : "P>";
         }
 
         if (player.state == PLAYER_STATE_WALK)
@@ -1183,12 +1395,17 @@ static const char* getPlayerDisplayText()
 
     if (player.state == PLAYER_STATE_ATTACK)
     {
-        if (player.animFrame == 1)
+        if (player.comboStep == 3)
         {
-            return "(P";
+            return player.animFrame == 1 ? "{P" : "<P";
         }
 
-        return "<P";
+        if (player.comboStep == 2)
+        {
+            return player.animFrame == 1 ? "[P" : "<P";
+        }
+
+        return player.animFrame == 1 ? "(P" : "<P";
     }
 
     if (player.state == PLAYER_STATE_WALK)
@@ -1263,7 +1480,7 @@ static void drawPlayerAttackHitbox()
 
     if (playerAttackHitbox.visible)
     {
-        VDP_drawText("##", playerAttackHitbox.tileX, playerAttackHitbox.tileY);
+        VDP_drawText(getPlayerAttackHitboxText(), playerAttackHitbox.tileX, playerAttackHitbox.tileY);
     }
 }
 
@@ -1380,8 +1597,11 @@ static void drawDebugHud()
     VDP_drawText("HP:", 12, 24);
     drawNumber(player.hp, 16, 24);
 
-    VDP_drawText("FACE:", 22, 24);
-    VDP_drawText(getFacingText(player.facing), 28, 24);
+    VDP_drawText("C:", 21, 24);
+    drawNumber(player.comboStep, 23, 24);
+
+    VDP_drawText("BUF:", 28, 24);
+    VDP_drawText(player.queuedNextAttack ? "Y" : "N", 33, 24);
 
     VDP_drawText("E0:", 0, 25);
     VDP_drawText(getEnemyStateText(enemies[0].state), 4, 25);
@@ -1404,10 +1624,10 @@ static void drawDebugHud()
     VDP_drawText("EHITS:", 13, 26);
     drawNumber(enemyHitCounter, 20, 26);
 
-    VDP_drawText("DEAD:", 26, 26);
-    drawNumber(enemiesDefeated, 32, 26);
+    VDP_drawText("PAUSE:", 26, 26);
+    drawNumber(hitPauseTimer, 33, 26);
 
-    VDP_drawText("BUILD 008 / 3 ENEMY WAVE", 7, 27);
+    VDP_drawText("BUILD 009 / 3 HIT COMBO + HIT PAUSE", 1, 27);
 }
 
 static void drawFrame()
@@ -1433,11 +1653,18 @@ int main(bool hard)
     {
         if (gameState == GAME_STATE_PLAYING)
         {
-            updatePlayer();
-            updateEnemies();
+            if (hitPauseTimer > 0)
+            {
+                hitPauseTimer--;
+            }
+            else
+            {
+                updatePlayer();
+                updateEnemies();
 
-            checkPlayerAttackVsEnemies();
-            checkEnemiesAttackVsPlayer();
+                checkPlayerAttackVsEnemies();
+                checkEnemiesAttackVsPlayer();
+            }
         }
         else
         {
