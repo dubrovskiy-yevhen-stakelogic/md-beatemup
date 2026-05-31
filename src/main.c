@@ -1,8 +1,8 @@
 #include <genesis.h>
 #include "resources.h"
 
-#define PLAYER_FOOT_OFFSET_X 52
-#define PLAYER_FOOT_OFFSET_Y 122
+#define PLAYER_FOOT_OFFSET_X 32
+#define PLAYER_FOOT_OFFSET_Y 76
 #define ARENA_MIN_X 40
 #define ARENA_MAX_X 280
 #define ARENA_MIN_Y 136
@@ -13,8 +13,8 @@
 #define IDLE_FRAME_COUNT 6
 #define WALK_FRAME_COUNT 6
 #define ATTACK_FRAME_COUNT 6
-#define IDLE_FRAME_DELAY 96
-#define WALK_FRAME_DELAY 20
+#define IDLE_FRAME_DELAY 20
+#define WALK_FRAME_DELAY 6
 
 typedef enum { PLAYER_STATE_IDLE = 0, PLAYER_STATE_WALK, PLAYER_STATE_ATTACK } PlayerState;
 typedef enum { FACING_LEFT = 0, FACING_RIGHT } FacingDirection;
