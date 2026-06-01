@@ -4,5 +4,6 @@
 #define _RES_RESOURCES_H_
 
 extern const SpriteDefinition player_sprite;
+extern const SpriteDefinition player_attack_sprite;
 
 #endif // _RES_RESOURCES_H_

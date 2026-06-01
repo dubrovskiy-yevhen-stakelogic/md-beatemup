@@ -4,8 +4,15 @@
 #define PLAYER_FRAME_W 48
 #define PLAYER_FRAME_H 96
 
+#define PLAYER_ATTACK_FRAME_W 64
+#define PLAYER_ATTACK_FRAME_H 96
+
 #define PLAYER_FOOT_OFFSET_X 24
 #define PLAYER_FOOT_OFFSET_Y 87
+
+#define PLAYER_ATTACK_FOOT_OFFSET_X_LEFT 41
+#define PLAYER_ATTACK_FOOT_OFFSET_X_RIGHT 23
+#define PLAYER_ATTACK_FOOT_OFFSET_Y 86
 
 #define ARENA_MIN_X 32
 #define ARENA_MAX_X 288
@@ -21,13 +28,17 @@
 #define WALK_FIRST_FRAME 3
 #define WALK_FRAME_COUNT 6
 
+#define JAB_FRAME 0
+
 #define IDLE_FRAME_DELAY 14
 #define WALK_FRAME_DELAY 7
+#define JAB_DURATION 10
 
 typedef enum
 {
     PLAYER_STATE_IDLE = 0,
-    PLAYER_STATE_WALK
+    PLAYER_STATE_WALK,
+    PLAYER_STATE_JAB
 } PlayerState;
 
 typedef enum
@@ -49,8 +60,10 @@ typedef struct
 
     u16 animTimer;
     u16 animFrame;
+    u16 attackTimer;
 
     Sprite* sprite;
+    Sprite* attackSprite;
 } Player;
 
 static Player player;
@@ -64,6 +77,8 @@ static const char* getPlayerStateText(PlayerState state)
             return "IDLE";
         case PLAYER_STATE_WALK:
             return "WALK";
+        case PLAYER_STATE_JAB:
+            return "JAB ";
         default:
             return "UNKNOWN";
     }
@@ -102,15 +117,15 @@ static void drawArena()
     VDP_clearPlane(BG_B, TRUE);
 
     VDP_drawText("========================================", 0, 0);
-    VDP_drawText("=        MD BEATEMUP - BUILD 028       =", 0, 1);
-    VDP_drawText("=       USER RAW SPRITE TEST           =", 0, 2);
+    VDP_drawText("=        MD BEATEMUP - BUILD 029       =", 0, 1);
+    VDP_drawText("=          PLAYER JAB TEST             =", 0, 2);
     VDP_drawText("========================================", 0, 3);
 
     VDP_drawText("D-PAD: MOVE", 2, 5);
-    VDP_drawText("NO ATTACK YET", 17, 5);
+    VDP_drawText("A: JAB", 17, 5);
 
-    VDP_drawText("USING YOUR PNG AS-IS", 8, 6);
-    VDP_drawText("9 FRAMES: 0-2 IDLE, 3-8 WALK", 4, 7);
+    VDP_drawText("PLAYER.PNG: IDLE/WALK", 8, 6);
+    VDP_drawText("PLAYER_ATTACK.PNG: FRAME 0 JAB", 4, 7);
 
     VDP_drawText("+--------------------------------------+", 0, 10);
     for (u16 y = 11; y <= 22; y++)
@@ -131,6 +146,16 @@ static void setPlayerFrame(u16 frame)
     SPR_setFrame(player.sprite, frame);
 }
 
+static s16 getAttackFootOffsetX()
+{
+    if (player.facing == FACING_LEFT)
+    {
+        return PLAYER_ATTACK_FOOT_OFFSET_X_LEFT;
+    }
+
+    return PLAYER_ATTACK_FOOT_OFFSET_X_RIGHT;
+}
+
 static void syncPlayerSprite()
 {
     SPR_setPosition(
@@ -139,7 +164,25 @@ static void syncPlayerSprite()
         player.y - PLAYER_FOOT_OFFSET_Y
     );
 
-    SPR_setHFlip(player.sprite, player.facing == FACING_LEFT);
+    SPR_setPosition(
+        player.attackSprite,
+        player.x - getAttackFootOffsetX(),
+        player.y - PLAYER_ATTACK_FOOT_OFFSET_Y
+    );
+
+    SPR_setHFlip(player.sprite, player.facing == FACING_RIGHT);
+    SPR_setHFlip(player.attackSprite, player.facing == FACING_RIGHT);
+
+    if (player.state == PLAYER_STATE_JAB)
+    {
+        SPR_setVisibility(player.sprite, HIDDEN);
+        SPR_setVisibility(player.attackSprite, VISIBLE);
+    }
+    else
+    {
+        SPR_setVisibility(player.sprite, VISIBLE);
+        SPR_setVisibility(player.attackSprite, HIDDEN);
+    }
 }
 
 static void clampPlayerToArena()
@@ -178,6 +221,7 @@ static void initPlayer()
 
     player.animTimer = 0;
     player.animFrame = IDLE_FIRST_FRAME;
+    player.attackTimer = 0;
 
     player.sprite = SPR_addSprite(
         &player_sprite,
@@ -186,27 +230,58 @@ static void initPlayer()
         TILE_ATTR(PAL1, TRUE, FALSE, FALSE)
     );
 
+    player.attackSprite = SPR_addSprite(
+        &player_attack_sprite,
+        player.x - getAttackFootOffsetX(),
+        player.y - PLAYER_ATTACK_FOOT_OFFSET_Y,
+        TILE_ATTR(PAL1, TRUE, FALSE, FALSE)
+    );
+
     /*
-        One-row sprite sheet:
+        player.png:
         frames 0-2 = idle
         frames 3-8 = walk
 
-        We do NOT switch animation rows.
-        We only manually set frame indexes inside animation 0.
+        player_attack.png:
+        frame 0 = jab
+        frames 1-2 are reserved for the future combo and are not used yet.
     */
     SPR_setAutoAnimation(player.sprite, FALSE);
     SPR_setAnim(player.sprite, 0);
     SPR_setFrame(player.sprite, IDLE_FIRST_FRAME);
 
+    SPR_setAutoAnimation(player.attackSprite, FALSE);
+    SPR_setAnim(player.attackSprite, 0);
+    SPR_setFrame(player.attackSprite, JAB_FRAME);
+
     syncPlayerSprite();
+}
+
+static void startPlayerJab()
+{
+    player.velocityX = 0;
+    player.velocityY = 0;
+    player.state = PLAYER_STATE_JAB;
+    player.attackTimer = JAB_DURATION;
+    player.animTimer = 0;
+
+    SPR_setFrame(player.attackSprite, JAB_FRAME);
+    PAL_setPalette(PAL1, player_attack_sprite.palette->data, DMA);
 }
 
 static void updatePlayerInput()
 {
     u16 joy = JOY_readJoypad(JOY_1);
+    u16 pressed = joy & ~previousJoy;
 
     player.velocityX = 0;
     player.velocityY = 0;
+
+    if (player.state == PLAYER_STATE_JAB)
+    {
+        previousJoy = joy;
+        return;
+    }
 
     if (joy & BUTTON_LEFT)
     {
@@ -228,6 +303,13 @@ static void updatePlayerInput()
         player.velocityY = PLAYER_SPEED_Y;
     }
 
+    if (pressed & BUTTON_A)
+    {
+        startPlayerJab();
+        previousJoy = joy;
+        return;
+    }
+
     if ((player.velocityX != 0) || (player.velocityY != 0))
     {
         if (player.state != PLAYER_STATE_WALK)
@@ -244,6 +326,7 @@ static void updatePlayerInput()
             player.state = PLAYER_STATE_IDLE;
             player.animTimer = 0;
             setPlayerFrame(IDLE_FIRST_FRAME);
+            PAL_setPalette(PAL1, player_sprite.palette->data, DMA);
         }
     }
 
@@ -256,6 +339,24 @@ static void updatePlayerAnimation()
     u16 frameCount;
     u16 delay;
     u16 relativeFrame;
+
+    if (player.state == PLAYER_STATE_JAB)
+    {
+        if (player.attackTimer > 0)
+        {
+            player.attackTimer--;
+        }
+
+        if (player.attackTimer == 0)
+        {
+            player.state = PLAYER_STATE_IDLE;
+            player.animTimer = 0;
+            setPlayerFrame(IDLE_FIRST_FRAME);
+            PAL_setPalette(PAL1, player_sprite.palette->data, DMA);
+        }
+
+        return;
+    }
 
     player.animTimer++;
 
@@ -287,10 +388,13 @@ static void updatePlayer()
 {
     updatePlayerInput();
 
-    player.x += player.velocityX;
-    player.y += player.velocityY;
+    if (player.state != PLAYER_STATE_JAB)
+    {
+        player.x += player.velocityX;
+        player.y += player.velocityY;
 
-    clampPlayerToArena();
+        clampPlayerToArena();
+    }
 
     updatePlayerAnimation();
     syncPlayerSprite();
@@ -314,9 +418,10 @@ static void drawDebugHud()
     VDP_drawText("TIMER:", 0, 26);
     drawNumber(player.animTimer, 7, 26);
 
-    VDP_drawText("SIZE: 48x96", 15, 26);
+    VDP_drawText("JAB:", 15, 26);
+    drawNumber(player.attackTimer, 20, 26);
 
-    VDP_drawText("BUILD 028 / RAW USER SPRITE", 5, 27);
+    VDP_drawText("BUILD 029 / JAB FRAME 0", 5, 27);
 }
 
 int main(bool hard)
