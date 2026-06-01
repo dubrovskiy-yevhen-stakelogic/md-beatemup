@@ -1,1 +1,1 @@
-SPRITE player_sprite "player_small.png" 8 10 FAST 4
+SPRITE player_sprite "player.png" 6 12 FAST 4
